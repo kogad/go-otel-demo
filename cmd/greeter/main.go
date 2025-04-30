@@ -3,9 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
+	"log/slog"
 	"net"
+	"os"
 
+	"example.com/go-otel-demo/logger"
 	pb "example.com/go-otel-demo/proto"
 	"example.com/go-otel-demo/telemetry"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -24,6 +28,7 @@ type gatewayServer struct {
 }
 
 func (s *gatewayServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloReply, error) {
+	slog.InfoContext(ctx, "start SayHello", "request", req)
 
 	err := validateRequest(req)
 	if err != nil {
@@ -33,6 +38,7 @@ func (s *gatewayServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb
 	bReq := &pb.ComputeRequest{Payload: req.Name}
 	bResp, err := s.backendClient.Compute(ctx, bReq)
 	if err != nil {
+		slog.ErrorContext(ctx, "Compute failed", "err", err)
 		return nil, err
 	}
 	return &pb.HelloReply{Message: bResp.Result}, nil
@@ -94,6 +100,17 @@ func main() {
 		}
 	}()
 
+	f, err := os.OpenFile("greeter.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		panic(err)
+	}
+
+	w := io.MultiWriter(os.Stdout, f)
+
+	jsonHandler := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(logger.NewTraceHandler(jsonHandler))
+	slog.SetDefault(logger)
+
 	conn, err := grpc.NewClient(
 		"localhost:50051",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -119,7 +136,7 @@ func main() {
 	pb.RegisterGreeterServer(srv, &gatewayServer{backendClient: backendClient})
 	reflection.Register(srv)
 
-	log.Println("gateway server (Greeter) listening on :50052")
+	slog.Info("Greeter server listening on :50052")
 
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)

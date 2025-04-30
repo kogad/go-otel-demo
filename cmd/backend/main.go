@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
+	"log/slog"
 	"net"
+	"os"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -15,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"example.com/go-otel-demo/logger"
 	pb "example.com/go-otel-demo/proto"
 	"example.com/go-otel-demo/telemetry"
 )
@@ -32,10 +36,13 @@ type backendServer struct {
 }
 
 func (s *backendServer) Compute(ctx context.Context, req *pb.ComputeRequest) (*pb.ComputeResponse, error) {
+	slog.InfoContext(ctx, "start Compute", "request", req)
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(attribute.String("req.payload", req.Payload))
+
 	msg, err := generateMessage(ctx, req.Payload)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to generate message", "err", err)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 	return &pb.ComputeResponse{Result: msg}, nil
@@ -71,6 +78,17 @@ func main() {
 		}
 	}()
 
+	f, err := os.OpenFile("backend.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		panic(err)
+	}
+
+	w := io.MultiWriter(os.Stdout, f)
+
+	jsonHandler := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(logger.NewTraceHandler(jsonHandler))
+	slog.SetDefault(logger)
+
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
@@ -82,7 +100,7 @@ func main() {
 
 	pb.RegisterComputeServiceServer(grpcServer, &backendServer{})
 
-	log.Println("▶ backend server listening on :50051")
+	slog.InfoContext(ctx, "backend server listening on :50051")
 
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
